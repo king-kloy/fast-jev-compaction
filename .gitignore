@@ -2,3 +2,7 @@ node_modules
 dist
 .env
 demo/JevDemo/build
+
+# run-local state and scratch handoff prompts
+.stele-context/
+/PROMPT-NEXT-FINISH.md
