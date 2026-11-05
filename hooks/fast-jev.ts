@@ -256,6 +256,27 @@ function notify(
   $.ui.toast(text, { timeoutMs: 15_000 });
 }
 
+async function compactBetweenTurns($: {
+  session: { compact: () => Promise<unknown> };
+  clock: { sleep: (ms: number) => Promise<void> };
+  ui: { log: (text: string) => void };
+}): Promise<void> {
+  const attempts = 6;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    await $.clock.sleep(500 * attempt);
+    try {
+      await $.session.compact();
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt === attempts || !/turn is running/i.test(message)) {
+        $.ui.log(`auto-compact skipped (${message})`);
+        return;
+      }
+    }
+  }
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
@@ -291,19 +312,23 @@ export const register: Register = (on: On, options: PluginOptions) => {
 
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
     if (compacting) return next(event);
+    let due = false;
     try {
       const { context } = await $.session.usage();
-      if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
-      compacting = true;
-      await $.session.compact();
+      due = (context.percent ?? 0) >= configured.compactAtPercent;
     } catch (error) {
-      $.ui.log(
-        `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
-      );
-    } finally {
-      compacting = false;
+      $.ui.log(`auto-compact skipped (${error instanceof Error ? error.message : String(error)})`);
     }
-    return next(event);
+    const result = await next(event);
+    if (due) {
+      // compact() rejects while a turn runs, and the turn is still open until this
+      // hook returns. Compact after the return, retrying while the host closes it.
+      compacting = true;
+      void compactBetweenTurns($).finally(() => {
+        compacting = false;
+      });
+    }
+    return result;
   });
 };
 
